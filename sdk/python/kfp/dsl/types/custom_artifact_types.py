@@ -46,7 +46,7 @@ def get_param_to_custom_artifact_class(func: Callable) -> Dict[str, type]:
     param_to_artifact_cls: Dict[str, type] = {}
     kfp_artifact_classes = set(type_utils.ARTIFACT_CLASSES_MAPPING.values())
 
-    signature = inspect.signature(func)
+    signature = type_utils.get_resolved_signature(func)
     for name, param in signature.parameters.items():
         annotation = param.annotation
         if type_annotations.is_Input_Output_artifact_annotation(annotation):
@@ -63,7 +63,8 @@ def get_param_to_custom_artifact_class(func: Callable) -> Dict[str, type]:
         pass
 
     elif type_utils.is_typed_named_tuple_annotation(return_annotation):
-        for name, annotation in return_annotation.__annotations__.items():
+        for name, annotation in type_utils.get_namedtuple_field_annotations(
+                return_annotation).items():
             if type_annotations.is_artifact_class(
                     annotation) and annotation not in kfp_artifact_classes:
                 param_to_artifact_cls[f'{RETURN_PREFIX}{name}'] = annotation
@@ -84,7 +85,7 @@ def get_param_to_pydantic_basemodel_class(func: Callable) -> Dict[str, type]:
     """
     param_to_basemodel_cls: Dict[str, type] = {}
 
-    signature = inspect.signature(func)
+    signature = type_utils.get_resolved_signature(func)
     for name, param in signature.parameters.items():
         annotation = type_annotations.maybe_strip_optional_from_annotation(
             param.annotation)
@@ -97,7 +98,8 @@ def get_param_to_pydantic_basemodel_class(func: Callable) -> Dict[str, type]:
         pass
 
     elif type_utils.is_typed_named_tuple_annotation(return_annotation):
-        for name, annotation in return_annotation.__annotations__.items():
+        for name, annotation in type_utils.get_namedtuple_field_annotations(
+                return_annotation).items():
             annotation = type_annotations.maybe_strip_optional_from_annotation(
                 annotation)
             if type_utils.is_pydantic_basemodel_subclass(annotation):

@@ -685,5 +685,124 @@ class TestEmbeddedArtifactSymlinkResolution(unittest.TestCase):
                     pass
 
 
+class TestFutureAnnotations(unittest.TestCase):
+    """Regression tests for modules using ``from __future__ import annotations``."""
+
+    def _import_module_from_source(self, tmpdir: str, source: str,
+                                   module_name: str):
+        import importlib.util
+        import os
+        import sys
+        import textwrap
+
+        file_path = os.path.join(tmpdir, f'{module_name}.py')
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(textwrap.dedent(source))
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    def test_components_and_pipeline_match_without_future_annotations(self):
+        import sys
+        import textwrap
+
+        body = textwrap.dedent("""
+            from typing import NamedTuple, Optional
+            from kfp import dsl
+            from kfp.dsl import Input, Output, Dataset, Model
+
+            class AddOutputs(NamedTuple):
+                total: int
+
+            @dsl.component
+            def add(a: int, b: int = 1, label: Optional[str] = None) -> AddOutputs:
+                return AddOutputs(a + b)
+
+            @dsl.component
+            def transform(
+                in_ds: Input[Dataset],
+                out_model: Output[Model],
+            ) -> str:
+                return 'ok'
+
+            @dsl.container_component
+            def container_op(
+                text: str,
+                out_ds: Output[Dataset],
+            ) -> dsl.ContainerSpec:
+                return dsl.ContainerSpec(
+                    image='alpine',
+                    command=['echo', text],
+                )
+
+            @dsl.pipeline
+            def my_pipe(x: int = 2) -> str:
+                t1 = add(a=x)
+                t2 = container_op(text='hi')
+                t3 = transform(in_ds=t2.outputs['out_ds'])
+                return t3.outputs['Output']
+        """)
+
+        with TemporaryDirectory() as tmpdir:
+            try:
+                mod_no_future = self._import_module_from_source(
+                    tmpdir, body, '_test_no_future_mod')
+                mod_future = self._import_module_from_source(
+                    tmpdir,
+                    'from __future__ import annotations\n' + body,
+                    '_test_future_mod',
+                )
+                self.assertEqual(
+                    mod_future.add.component_spec,
+                    mod_no_future.add.component_spec,
+                )
+                self.assertEqual(
+                    mod_future.transform.component_spec,
+                    mod_no_future.transform.component_spec,
+                )
+                self.assertEqual(
+                    mod_future.container_op.component_spec,
+                    mod_no_future.container_op.component_spec,
+                )
+                self.assertEqual(
+                    mod_future.my_pipe.pipeline_spec,
+                    mod_no_future.my_pipe.pipeline_spec,
+                )
+            finally:
+                sys.modules.pop('_test_no_future_mod', None)
+                sys.modules.pop('_test_future_mod', None)
+
+    def test_unresolvable_schema_string_preserves_fallback(self):
+        import sys
+
+        source = """
+            from __future__ import annotations
+            from kfp import dsl
+            from kfp.dsl.types.type_annotations import InputPath
+
+            @dsl.component
+            def schema_comp(
+                a: int,
+                dataset_path: InputPath('system.Dataset@0.0.1'),
+                raw_schema: 'system.Dataset@0.0.1',
+            ) -> str:
+                return str(a)
+        """
+        with TemporaryDirectory() as tmpdir:
+            try:
+                mod = self._import_module_from_source(
+                    tmpdir, source, '_test_future_fallback_mod')
+                inputs = mod.schema_comp.component_spec.inputs
+                self.assertEqual(inputs['a'].type, 'Integer')
+                self.assertEqual(inputs['dataset_path'].type,
+                                 'system.Artifact@0.0.1')
+                self.assertEqual(inputs['raw_schema'].type,
+                                 'system.Dataset@0.0.1')
+            finally:
+                sys.modules.pop('_test_future_fallback_mod', None)
+
+
 if __name__ == '__main__':
     unittest.main()

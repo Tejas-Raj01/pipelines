@@ -15,7 +15,9 @@
 
 import inspect
 import json
-from typing import Any, Callable, Dict, Optional, Type, Union
+import sys
+from typing import (Any, Callable, Dict, ForwardRef, get_type_hints, Optional,
+                    Type, Union)
 
 try:
     from typing import get_args, get_origin
@@ -714,3 +716,66 @@ def _annotation_to_type_struct(annotation):
 def is_typed_named_tuple_annotation(annotation: Any) -> bool:
     return hasattr(annotation, '_fields') and hasattr(annotation,
                                                       '__annotations__')
+
+
+def _eval_annotation_str(annotation: Any, globalns: Dict[str, Any]) -> Any:
+    """Evaluates a stringified annotation, returning it unchanged on failure."""
+    expr = annotation.__forward_arg__ if isinstance(annotation,
+                                                    ForwardRef) else annotation
+    if not isinstance(expr, str):
+        return annotation
+    try:
+        return eval(expr, globalns)  # noqa: S307
+    except (NameError, SyntaxError, TypeError, AttributeError, ValueError):
+        return annotation
+
+
+def get_resolved_signature(func: Callable) -> inspect.Signature:
+    """Returns inspect.Signature with stringified annotations resolved.
+
+    Uses ``eval_str=True`` when available (Python 3.10+) and falls back to
+    per-annotation evaluation so that unresolvable string annotations such as
+    ``'system.Dataset@0.0.1'`` are preserved.
+    """
+    if sys.version_info >= (3, 10):
+        try:
+            return inspect.signature(func, eval_str=True)
+        except (NameError, SyntaxError, TypeError, AttributeError, ValueError):
+            pass
+
+    sig = inspect.signature(func)
+    unwrapped = inspect.unwrap(func)
+    globalns = getattr(unwrapped, '__globals__', None)
+    if globalns is None and getattr(unwrapped, '__module__',
+                                    None) in sys.modules:
+        globalns = sys.modules[unwrapped.__module__].__dict__
+    if not globalns:
+        return sig
+
+    new_params = [
+        param.replace(
+            annotation=_eval_annotation_str(param.annotation, globalns))
+        for param in sig.parameters.values()
+    ]
+    new_return = _eval_annotation_str(sig.return_annotation, globalns)
+    return sig.replace(parameters=new_params, return_annotation=new_return)
+
+
+def get_namedtuple_field_annotations(namedtuple_cls: Any) -> Dict[str, Any]:
+    """Returns resolved field annotations for a NamedTuple return type."""
+    raw = (
+        getattr(namedtuple_cls, '__annotations__', None) or
+        getattr(namedtuple_cls, '_field_types'))
+    if not any(isinstance(ann, (str, ForwardRef)) for ann in raw.values()):
+        return raw
+    try:
+        return get_type_hints(namedtuple_cls)
+    except (NameError, SyntaxError, TypeError, AttributeError, ValueError):
+        module_name = getattr(namedtuple_cls, '__module__', None)
+        globalns = (
+            sys.modules[module_name].__dict__
+            if module_name in sys.modules else {})
+        return {
+            field: _eval_annotation_str(ann, globalns)
+            for field, ann in raw.items()
+        }

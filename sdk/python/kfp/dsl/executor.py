@@ -47,12 +47,17 @@ class Executor:
         artifact_types.CONTAINER_TASK_ROOT = os.path.split(
             self.executor_output_path)[0]
 
+        signature = type_utils.get_resolved_signature(self.func)
+        self._resolved_annotations = {
+            name: param.annotation
+            for name, param in signature.parameters.items()
+        }
+        self.return_annotation = signature.return_annotation
+
         self.input_artifacts: Dict[str, Union[dsl.Artifact,
                                               List[dsl.Artifact]]] = {}
         self.output_artifacts: Dict[str, dsl.Artifact] = {}
         self.assign_input_and_output_artifacts()
-
-        self.return_annotation = inspect.signature(self.func).return_annotation
         self.excutor_output = {}
 
     def assign_input_and_output_artifacts(self) -> None:
@@ -61,7 +66,7 @@ class Executor:
                                                                {}).items():
             list_of_artifact_proto_structs = artifacts.get('artifacts')
             if list_of_artifact_proto_structs:
-                annotation = self.func.__annotations__[name]
+                annotation = self._resolved_annotations[name]
                 # InputPath has no attribute __origin__ and also should be handled as a single artifact
                 annotation = type_annotations.maybe_strip_optional_from_annotation(
                     annotation)
@@ -144,8 +149,16 @@ class Executor:
         func: Callable,
         annotation: Optional[Any] = None,
     ) -> Any:
-        annotation = func.__annotations__.get(
-            name) if annotation is None else annotation
+        if annotation is None:
+            if func is self.func and name in self._resolved_annotations:
+                annotation = self._resolved_annotations[name]
+            else:
+                sig = type_utils.get_resolved_signature(func)
+                param = sig.parameters.get(name)
+                annotation = (
+                    param.annotation if param is not None and
+                    param.annotation is not inspect.Parameter.empty else
+                    func.__annotations__.get(name))
         if type_annotations.is_list_of_artifacts(annotation):
             annotation = self._resolve_list_artifact_inner_type(
                 input_name=name, list_annotation=annotation)
@@ -324,9 +337,11 @@ class Executor:
                     raise RuntimeError(
                         f'Expected {len(self.return_annotation._fields)} return values from function `{self.func.__name__}`, got {len(func_output)}'
                     )
+                field_annotations = type_utils.get_namedtuple_field_annotations(
+                    self.return_annotation)
                 for i in range(len(self.return_annotation._fields)):
                     field = self.return_annotation._fields[i]
-                    field_type = self.return_annotation.__annotations__[field]
+                    field_type = field_annotations[field]
                     if type(func_output) == tuple:
                         field_value = func_output[i]
                     else:
