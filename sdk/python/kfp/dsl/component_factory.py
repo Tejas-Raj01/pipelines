@@ -336,8 +336,8 @@ def get_name_to_specs(
         # Getting field type annotations.
         # __annotations__ does not exist in python 3.5 and earlier
         # _field_types does not exist in python 3.9 and later
-        field_annotations = getattr(return_ann, '__annotations__',
-                                    None) or getattr(return_ann, '_field_types')
+        field_annotations = type_utils.get_namedtuple_field_annotations(
+            return_ann)
         for name in return_ann._fields:
             annotation = field_annotations[name]
             if not type_annotations.is_list_of_artifacts(
@@ -465,7 +465,7 @@ def extract_component_interface(
 
         return None
 
-    signature = inspect.signature(func)
+    signature = type_utils.get_resolved_signature(func)
     name_to_input_spec, name_to_output_spec = get_name_to_specs(
         signature, containerized)
     original_docstring = inspect.getdoc(func)
@@ -949,7 +949,7 @@ def create_container_component_from_func(
     """
 
     component_spec = extract_component_interface(func, containerized=True)
-    signature = inspect.signature(func)
+    signature = type_utils.get_resolved_signature(func)
     parameters = list(signature.parameters.values())
     arg_list = []
     for parameter in parameters:
